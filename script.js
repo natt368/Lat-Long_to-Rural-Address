@@ -86,6 +86,62 @@ function civicLotNumber(distanceFeet, isOddSide) {
   return String(lot).padStart(2, "0");
 }
 
+// Loads a URL via a <script> tag instead of fetch(). ArcGIS Server's
+// identify/query endpoints support this "JSONP" style (?callback=name)
+// even when they don't send CORS headers for a given origin - which is
+// exactly the case fetch() reports as a generic "Failed to fetch".
+function fetchJsonp(url, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const callbackName = `__jsonp_cb_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const script = document.createElement("script");
+    let settled = false;
+
+    const cleanup = () => {
+      delete window[callbackName];
+      script.remove();
+      clearTimeout(timer);
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error("Request timed out."));
+    }, timeoutMs);
+
+    window[callbackName] = (data) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(data);
+    };
+    script.onerror = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error("Request failed."));
+    };
+
+    const separator = url.includes("?") ? "&" : "?";
+    script.src = `${url}${separator}callback=${callbackName}`;
+    document.head.appendChild(script);
+  });
+}
+
+// Fetches an ArcGIS REST JSON endpoint, falling back to JSONP if a normal
+// fetch() fails (most commonly because the service doesn't send CORS
+// headers for this page's origin).
+async function fetchArcgisJson(url) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Request failed (HTTP ${response.status}).`);
+    }
+    return await response.json();
+  } catch (err) {
+    return fetchJsonp(url.toString());
+  }
+}
+
 function findAttr(attrs, cues) {
   const key = Object.keys(attrs).find((k) => {
     const tokens = k.toUpperCase().split(/[^A-Z0-9]+/);
@@ -107,11 +163,7 @@ async function lookupSurveyGrid(lat, lon, identifyUrl) {
   url.searchParams.set("returnGeometry", "true");
   url.searchParams.set("f", "json");
 
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Survey grid lookup failed (HTTP ${response.status}).`);
-  }
-  const data = await response.json();
+  const data = await fetchArcgisJson(url);
   const results = data.results || [];
 
   const sectionResult = results.find((r) => {
@@ -245,11 +297,7 @@ async function lookupPointAddress(lat, lon, identifyUrl) {
   url.searchParams.set("returnGeometry", "false");
   url.searchParams.set("f", "json");
 
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Civic address lookup failed (HTTP ${response.status}).`);
-  }
-  const data = await response.json();
+  const data = await fetchArcgisJson(url);
   const results = data.results || [];
 
   const addressResult = results.find(

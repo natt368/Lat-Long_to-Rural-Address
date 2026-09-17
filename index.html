@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rural Address Lookup</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="card">
+    <h1>Rural Address Lookup</h1>
+    <p class="subtitle">Enter GPS coordinates to get a shippable rural address (e.g. township road, county road, house number).</p>
+
+    <form id="lookup-form">
+      <div class="field">
+        <label for="lat">Latitude</label>
+        <input type="text" id="lat" name="lat" placeholder="e.g. 40.712776" required>
+      </div>
+      <div class="field">
+        <label for="lon">Longitude</label>
+        <input type="text" id="lon" name="lon" placeholder="e.g. -83.456789" required>
+      </div>
+      <button type="submit" id="submit-btn">Find Address</button>
+    </form>
+
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+
+    <section id="result" class="result hidden">
+      <h2>Rural Address</h2>
+      <p id="rural-address" class="rural-address"></p>
+      <dl id="details" class="details"></dl>
+      <p class="full-name"><span>Full location:</span> <span id="full-name"></span></p>
+    </section>
+
+    <footer class="attribution">
+      Geocoding data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>, via <a href="https://nominatim.org/" target="_blank" rel="noopener">Nominatim</a>.
+    </footer>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>

@@ -32,7 +32,10 @@ to find which province it's in, then:
 
 In all cases, **OpenStreetMap (Nominatim)** is also shown as a general
 reverse-geocode and cross-check, useful especially where OSM already has
-the road tagged directly.
+the road tagged directly. If that direct reverse-geocode lands on a bare
+road with no house number, the app searches a widening radius (1.5km, 5km,
+15km) via the Overpass API for the closest OSM feature that does have one,
+and shows it as "Nearest known address" with its distance.
 
 ## Running it
 

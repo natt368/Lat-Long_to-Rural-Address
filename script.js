@@ -45,6 +45,7 @@ const legalDescriptionEl = document.getElementById("legal-description");
 const atsCandidatesEl = document.getElementById("ats-candidates");
 const osmAddressEl = document.getElementById("osm-address");
 const osmDetailsEl = document.getElementById("osm-details");
+const nearestAddressEl = document.getElementById("nearest-address");
 const fullNameEl = document.getElementById("full-name");
 
 function setStatus(message, isError) {
@@ -355,6 +356,61 @@ function renderOsmDetails(address) {
   }
 }
 
+const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+
+function haversineMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// Nominatim's reverse geocode snaps to the nearest road/place, but rural
+// points often land on a bare road with no house number. This searches a
+// widening radius for the closest OSM feature that actually has an
+// addr:housenumber tag, as a genuine "nearest known address" fallback.
+async function findNearestAddress(lat, lon) {
+  for (const radiusMeters of [1500, 5000, 15000]) {
+    const query = `[out:json][timeout:20];(node(around:${radiusMeters},${lat},${lon})["addr:housenumber"];way(around:${radiusMeters},${lat},${lon})["addr:housenumber"];);out center tags;`;
+    const url = new URL(OVERPASS_URL);
+    url.searchParams.set("data", query);
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Nearest-address search failed (HTTP ${response.status}).`);
+    }
+    const data = await response.json();
+    const elements = data.elements || [];
+
+    let nearest = null;
+    let nearestDist = Infinity;
+    for (const el of elements) {
+      const elLat = el.lat ?? el.center?.lat;
+      const elLon = el.lon ?? el.center?.lon;
+      if (elLat === undefined || elLon === undefined) continue;
+      const dist = haversineMeters(lat, lon, elLat, elLon);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearest = el;
+      }
+    }
+
+    if (nearest) {
+      const tags = nearest.tags || {};
+      const houseNumber = tags["addr:housenumber"];
+      const street = tags["addr:street"];
+      return {
+        label: street ? `${houseNumber} ${street}` : houseNumber,
+        distanceMeters: Math.round(nearestDist),
+      };
+    }
+  }
+  return null;
+}
+
 async function lookupOsm(lat, lon) {
   const url = new URL(NOMINATIM_REVERSE_URL);
   url.searchParams.set("format", "jsonv2");
@@ -428,15 +484,32 @@ form.addEventListener("submit", async (event) => {
   if (osmError) {
     osmAddressEl.textContent = "OpenStreetMap lookup failed: " + osmError.message;
     osmDetailsEl.innerHTML = "";
+    nearestAddressEl.textContent = "";
     fullNameEl.textContent = "";
   } else if (osmData.error || !osmData.address) {
     osmAddressEl.textContent = "No OpenStreetMap address found for this location.";
     osmDetailsEl.innerHTML = "";
+    nearestAddressEl.textContent = "";
     fullNameEl.textContent = "";
   } else {
-    osmAddressEl.textContent = buildOsmAddress(osmData.address) || "No specific road found near this point.";
+    const exactAddress = buildOsmAddress(osmData.address);
+    osmAddressEl.textContent = exactAddress || "No specific road found near this point.";
     renderOsmDetails(osmData.address);
     fullNameEl.textContent = osmData.display_name || "";
+
+    if (!osmData.address.house_number) {
+      nearestAddressEl.textContent = "Searching nearby for the closest known address...";
+      try {
+        const nearest = await findNearestAddress(lat, lon);
+        nearestAddressEl.textContent = nearest
+          ? `Nearest known address (~${nearest.distanceMeters.toLocaleString()} m away): ${nearest.label}`
+          : "No nearby address with a house number was found in OpenStreetMap.";
+      } catch (err) {
+        nearestAddressEl.textContent = "Nearest-address search failed: " + err.message;
+      }
+    } else {
+      nearestAddressEl.textContent = "";
+    }
   }
 
   submitBtn.disabled = false;

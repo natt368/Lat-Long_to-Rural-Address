@@ -356,7 +356,14 @@ function renderOsmDetails(address) {
   }
 }
 
-const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+// Multiple public mirrors, since any single one can be blocked by a
+// network/browser and we've seen that happen - trying several gives a much
+// better chance one gets through.
+const OVERPASS_MIRRORS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
+];
 
 function haversineMeters(lat1, lon1, lat2, lon2) {
   const R = 6371000;
@@ -373,18 +380,31 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
 // widening radius for the closest OSM feature that actually has an
 // addr:housenumber tag, as a genuine "nearest known address" fallback.
 async function findNearestAddress(lat, lon) {
+  let lastError = null;
+
   for (const radiusMeters of [1500, 5000, 15000]) {
     const query = `[out:json][timeout:20];(node(around:${radiusMeters},${lat},${lon})["addr:housenumber"];way(around:${radiusMeters},${lat},${lon})["addr:housenumber"];);out center tags;`;
-    const url = new URL(OVERPASS_URL);
-    url.searchParams.set("data", query);
 
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`Nearest-address search failed (HTTP ${response.status}).`);
+    let data = null;
+    for (const mirror of OVERPASS_MIRRORS) {
+      const url = new URL(mirror);
+      url.searchParams.set("data", query);
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        data = await response.json();
+        lastError = null;
+        break;
+      } catch (err) {
+        lastError = err;
+      }
     }
-    const data = await response.json();
-    const elements = data.elements || [];
 
+    if (!data) continue;
+
+    const elements = data.elements || [];
     let nearest = null;
     let nearestDist = Infinity;
     for (const el of elements) {
@@ -407,6 +427,10 @@ async function findNearestAddress(lat, lon) {
         distanceMeters: Math.round(nearestDist),
       };
     }
+  }
+
+  if (lastError) {
+    throw new Error("Couldn't reach any Overpass mirror - " + lastError.message);
   }
   return null;
 }

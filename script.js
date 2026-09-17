@@ -1,13 +1,35 @@
 const NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse";
-const ATS_IDENTIFY_URL = "https://maps.alberta.ca/genesis/rest/services/Alberta_Township_System/Latest/MapServer/identify";
 const FEET_PER_DEGREE_LAT = 365221;
-const FEET_PER_MILE = 5280;
 const UNIT_FEET = 132; // each civic-numbering unit along a road allowance
+
+// Alberta and Saskatchewan both use the Dominion Land Survey grid and a
+// "Township Road ###" / "Range Road ###" civic addressing scheme, but they
+// disagree on which side of a *township* road is odd vs even (range-road
+// parity happens to agree). British Columbia's DLS coverage is limited to
+// the Peace River Block and isn't handled here; Manitoba's civic numbering
+// varies by municipality (some use this scheme, others use an unrelated
+// "gate address" format) so it isn't safe to guess. Ontario doesn't use a
+// township/range grid for addressing at all.
+const PROVINCE_CONFIG = {
+  Alberta: {
+    identifyUrl: "https://maps.alberta.ca/genesis/rest/services/Alberta_Township_System/Latest/MapServer/identify",
+    meridianLabel: (m) => `W${m}M`,
+    townshipRoadOddSide: "south",
+    rangeRoadOddSide: "east",
+  },
+  Saskatchewan: {
+    identifyUrl: "https://gis.saskatchewan.ca/arcgis/rest/services/CadastreSection/MapServer/identify",
+    meridianLabel: (m) => `W${m}`,
+    townshipRoadOddSide: "north",
+    rangeRoadOddSide: "east",
+  },
+};
 
 const form = document.getElementById("lookup-form");
 const submitBtn = document.getElementById("submit-btn");
 const statusEl = document.getElementById("status");
 const resultEl = document.getElementById("result");
+const gridHeadingEl = document.getElementById("grid-heading");
 const legalDescriptionEl = document.getElementById("legal-description");
 const atsCandidatesEl = document.getElementById("ats-candidates");
 const osmAddressEl = document.getElementById("osm-address");
@@ -44,17 +66,26 @@ function gridRoadNumber(base, offset) {
   return offset >= 6 ? (base + 1) * 10 : base * 10 + offset;
 }
 
-// Civic number per the Alberta rural addressing standard: each mile is split into
-// 40 units of 132 ft. Units are odd (1-79) on the south side of township roads and
-// the east side of range roads; even (2-80) on the opposite side.
-function civicUnitNumber(distanceFeet, isOddSide) {
+// Civic number per the prairie rural addressing standard: the road number is
+// the cross-road you're nearest the start of, followed by a 2-digit lot
+// (01-80, one every 132 ft = 1/40th of a mile) counted away from it.
+function civicLotNumber(distanceFeet, isOddSide) {
   const unit = Math.min(40, Math.max(1, Math.round(distanceFeet / UNIT_FEET) || 1));
-  return isOddSide ? unit * 2 - 1 : unit * 2;
+  const lot = isOddSide ? unit * 2 - 1 : unit * 2;
+  return String(lot).padStart(2, "0");
 }
 
-async function lookupATS(lat, lon) {
+function findAttr(attrs, cues) {
+  const key = Object.keys(attrs).find((k) => {
+    const tokens = k.toUpperCase().split(/[^A-Z0-9]+/);
+    return cues.some((cue) => tokens.includes(cue));
+  });
+  return key ? attrs[key] : undefined;
+}
+
+async function lookupSurveyGrid(lat, lon, identifyUrl) {
   const delta = 0.01;
-  const url = new URL(ATS_IDENTIFY_URL);
+  const url = new URL(identifyUrl);
   url.searchParams.set("geometry", `${lon},${lat}`);
   url.searchParams.set("geometryType", "esriGeometryPoint");
   url.searchParams.set("sr", "4326");
@@ -67,24 +98,17 @@ async function lookupATS(lat, lon) {
 
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Alberta Township System lookup failed (HTTP ${response.status}).`);
+    throw new Error(`Survey grid lookup failed (HTTP ${response.status}).`);
   }
   const data = await response.json();
   const results = data.results || [];
 
-  const findAttr = (attrs, candidates) => {
-    const key = Object.keys(attrs).find((k) => candidates.includes(k.toUpperCase()));
-    return key ? attrs[key] : undefined;
-  };
-
   const sectionResult = results.find((r) => {
-    if (!r.attributes) return false;
+    if (!r.attributes || !r.geometry || !r.geometry.rings) return false;
     return (
       findAttr(r.attributes, ["SEC", "SECTION"]) !== undefined &&
       findAttr(r.attributes, ["TWP", "TOWNSHIP"]) !== undefined &&
-      findAttr(r.attributes, ["RGE", "RANGE"]) !== undefined &&
-      r.geometry &&
-      r.geometry.rings
+      findAttr(r.attributes, ["RGE", "RANGE"]) !== undefined
     );
   });
 
@@ -107,63 +131,81 @@ async function lookupATS(lat, lon) {
 
   const feetPerDegreeLon = FEET_PER_DEGREE_LAT * Math.cos((lat * Math.PI) / 180);
 
-  const distSouthFt = (lat - minLat) * FEET_PER_DEGREE_LAT;
-  const distNorthFt = (maxLat - lat) * FEET_PER_DEGREE_LAT;
-  const distEastFt = (maxLon - lon) * feetPerDegreeLon;
-  const distWestFt = (lon - minLon) * feetPerDegreeLon;
-
-  const { row, columnFromEast } = sectionRowColumn(section);
-
-  const southTwpRd = gridRoadNumber(township, row);
-  const northTwpRd = gridRoadNumber(township, row + 1);
-  const eastRgeRd = gridRoadNumber(range, columnFromEast);
-  const westRgeRd = gridRoadNumber(range, columnFromEast + 1);
-
-  // Being closest to the section's south edge means the point sits *north* of
-  // that road (and vice versa) - the civic-number parity rule is about which
-  // side of the road the point is on, so it's the opposite of the closer edge.
-  const nearestTwpRd = distSouthFt <= distNorthFt
-    ? { number: southTwpRd, distanceFeet: distSouthFt, pointIsNorthOfRoad: true }
-    : { number: northTwpRd, distanceFeet: distNorthFt, pointIsNorthOfRoad: false };
-
-  const nearestRgeRd = distEastFt <= distWestFt
-    ? { number: eastRgeRd, distanceFeet: distEastFt, pointIsWestOfRoad: true }
-    : { number: westRgeRd, distanceFeet: distWestFt, pointIsWestOfRoad: false };
-
-  // Position *along* each road is measured using distance from the perpendicular grid line.
-  // Odd numbers: south side of township roads, east side of range roads.
-  const twpCivic = civicUnitNumber(
-    distEastFt <= distWestFt ? distEastFt : distWestFt,
-    !nearestTwpRd.pointIsNorthOfRoad
-  );
-  const rgeCivic = civicUnitNumber(
-    distSouthFt <= distNorthFt ? distSouthFt : distNorthFt,
-    !nearestRgeRd.pointIsWestOfRoad
-  );
-
   return {
     meridian,
     range,
     township,
     section,
-    townshipRoad: { civic: twpCivic, number: nearestTwpRd.number },
-    rangeRoad: { civic: rgeCivic, number: nearestRgeRd.number },
+    distSouthFt: (lat - minLat) * FEET_PER_DEGREE_LAT,
+    distNorthFt: (maxLat - lat) * FEET_PER_DEGREE_LAT,
+    distEastFt: (maxLon - lon) * feetPerDegreeLon,
+    distWestFt: (lon - minLon) * feetPerDegreeLon,
   };
 }
 
-function renderATS(ats) {
-  if (!ats) {
-    legalDescriptionEl.textContent = "Could not determine a legal land location for this point (it may be outside Alberta's survey grid).";
+// Combines the survey-grid location with a province's addressing rules to
+// estimate the nearest Township Road / Range Road civic addresses. The
+// reference cross-road for each is always the one at the start of its mile
+// segment (the range road you're east of; the township road you're north
+// of), with the lot number counted away from that reference.
+function computeGridRoads(grid, config) {
+  const { row, columnFromEast } = sectionRowColumn(grid.section);
+
+  const southTwpRd = gridRoadNumber(grid.township, row);
+  const northTwpRd = gridRoadNumber(grid.township, row + 1);
+  const eastRgeRd = gridRoadNumber(grid.range, columnFromEast);
+  const westRgeRd = gridRoadNumber(grid.range, columnFromEast + 1);
+
+  const pointIsNorthOfSouthTwpRd = grid.distSouthFt <= grid.distNorthFt;
+  const nearestTwpRdNumber = pointIsNorthOfSouthTwpRd ? southTwpRd : northTwpRd;
+  const pointIsSouthOfTwpRd = !pointIsNorthOfSouthTwpRd; // i.e. nearest edge is the northern one
+  const twpRoadIsOdd = config.townshipRoadOddSide === "south" ? pointIsSouthOfTwpRd : !pointIsSouthOfTwpRd;
+
+  const pointIsEastOfWestRgeRd = grid.distEastFt > grid.distWestFt;
+  const nearestRgeRdNumber = pointIsEastOfWestRgeRd ? westRgeRd : eastRgeRd;
+  const pointIsWestOfRgeRd = !pointIsEastOfWestRgeRd; // i.e. nearest edge is the eastern one
+  const rgeRoadIsOdd = config.rangeRoadOddSide === "east" ? !pointIsWestOfRgeRd : pointIsWestOfRgeRd;
+
+  return {
+    townshipRoad: { number: nearestTwpRdNumber, civic: `${westRgeRd}${civicLotNumber(grid.distWestFt, twpRoadIsOdd)}` },
+    rangeRoad: { number: nearestRgeRdNumber, civic: `${southTwpRd}${civicLotNumber(grid.distSouthFt, rgeRoadIsOdd)}` },
+  };
+}
+
+const PROVINCE_ALIASES = {
+  Alberta: "Alberta",
+  Saskatchewan: "Saskatchewan",
+  Manitoba: "Manitoba",
+  Ontario: "Ontario",
+  "British Columbia": "British Columbia",
+};
+
+function renderGridSection(province, ats) {
+  gridHeadingEl.textContent = province ? `Dominion Land Survey grid (${province})` : "Dominion Land Survey grid";
+
+  if (!PROVINCE_CONFIG[province]) {
+    legalDescriptionEl.textContent = province
+      ? `${province} doesn't have a consistent province-wide grid addressing system this app can compute - see the OpenStreetMap result below.`
+      : "Could not determine the province for this point.";
     atsCandidatesEl.innerHTML = "";
     return;
   }
 
-  legalDescriptionEl.textContent = `Section ${ats.section}, Township ${ats.township}, Range ${ats.range}, W${ats.meridian}M`;
+  if (!ats) {
+    legalDescriptionEl.textContent = `Could not determine a legal land location for this point (it may be outside ${province}'s survey grid).`;
+    atsCandidatesEl.innerHTML = "";
+    return;
+  }
+
+  const config = PROVINCE_CONFIG[province];
+  const roads = computeGridRoads(ats, config);
+
+  legalDescriptionEl.textContent = `Section ${ats.section}, Township ${ats.township}, Range ${ats.range}, ${config.meridianLabel(ats.meridian)}`;
 
   atsCandidatesEl.innerHTML = "";
   const rows = [
-    ["Nearest Township Road", `~${ats.townshipRoad.civic} Township Road ${ats.townshipRoad.number}`],
-    ["Nearest Range Road", `~${ats.rangeRoad.civic} Range Road ${ats.rangeRoad.number}`],
+    ["Nearest Township Road", `~${roads.townshipRoad.civic} Township Road ${roads.townshipRoad.number}`],
+    ["Nearest Range Road", `~${roads.rangeRoad.civic} Range Road ${roads.rangeRoad.number}`],
   ];
   for (const [label, value] of rows) {
     const dt = document.createElement("dt");
@@ -185,7 +227,7 @@ function renderOsmDetails(address) {
   const fields = [
     ["County", address.county],
     ["Town/Township", address.town || address.village || address.hamlet || address.township],
-    ["State", address.state],
+    ["State/Province", address.state],
     ["Postal Code", address.postcode],
     ["Country", address.country],
   ];
@@ -230,33 +272,47 @@ form.addEventListener("submit", async (event) => {
   resultEl.classList.add("hidden");
   setStatus("Looking up address...", false);
 
-  const [atsSettled, osmSettled] = await Promise.allSettled([lookupATS(lat, lon), lookupOsm(lat, lon)]);
-
-  resultEl.classList.remove("hidden");
-  setStatus("", false);
-
-  if (atsSettled.status === "fulfilled") {
-    renderATS(atsSettled.value);
-  } else {
-    legalDescriptionEl.textContent = "Alberta Township System lookup failed: " + atsSettled.reason.message;
-    atsCandidatesEl.innerHTML = "";
+  let osmData = null;
+  let osmError = null;
+  try {
+    osmData = await lookupOsm(lat, lon);
+  } catch (err) {
+    osmError = err;
   }
 
-  if (osmSettled.status === "fulfilled") {
-    const data = osmSettled.value;
-    if (data.error || !data.address) {
-      osmAddressEl.textContent = "No OpenStreetMap address found for this location.";
-      osmDetailsEl.innerHTML = "";
-      fullNameEl.textContent = "";
-    } else {
-      osmAddressEl.textContent = buildOsmAddress(data.address) || "No specific road found near this point.";
-      renderOsmDetails(data.address);
-      fullNameEl.textContent = data.display_name || "";
+  resultEl.classList.remove("hidden");
+
+  const rawState = osmData && osmData.address ? osmData.address.state : null;
+  const province = rawState ? PROVINCE_ALIASES[rawState] || rawState : null;
+
+  if (PROVINCE_CONFIG[province]) {
+    setStatus("Looking up survey grid...", false);
+    try {
+      const grid = await lookupSurveyGrid(lat, lon, PROVINCE_CONFIG[province].identifyUrl);
+      renderGridSection(province, grid);
+    } catch (err) {
+      gridHeadingEl.textContent = `Dominion Land Survey grid (${province})`;
+      legalDescriptionEl.textContent = "Survey grid lookup failed: " + err.message;
+      atsCandidatesEl.innerHTML = "";
     }
   } else {
-    osmAddressEl.textContent = "OpenStreetMap lookup failed: " + osmSettled.reason.message;
+    renderGridSection(province, null);
+  }
+
+  setStatus("", false);
+
+  if (osmError) {
+    osmAddressEl.textContent = "OpenStreetMap lookup failed: " + osmError.message;
     osmDetailsEl.innerHTML = "";
     fullNameEl.textContent = "";
+  } else if (osmData.error || !osmData.address) {
+    osmAddressEl.textContent = "No OpenStreetMap address found for this location.";
+    osmDetailsEl.innerHTML = "";
+    fullNameEl.textContent = "";
+  } else {
+    osmAddressEl.textContent = buildOsmAddress(osmData.address) || "No specific road found near this point.";
+    renderOsmDetails(osmData.address);
+    fullNameEl.textContent = osmData.display_name || "";
   }
 
   submitBtn.disabled = false;

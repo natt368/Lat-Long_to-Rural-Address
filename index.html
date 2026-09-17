@@ -9,16 +9,12 @@
 <body>
   <main class="card">
     <h1>Rural Address Lookup</h1>
-    <p class="subtitle">Enter GPS coordinates to get a shippable rural address (e.g. township road, county road, house number).</p>
+    <p class="subtitle">Paste GPS coordinates (like the ones Google Maps copies) to find the Alberta-style rural address &mdash; e.g. <strong>9001 Township Road 365</strong>.</p>
 
     <form id="lookup-form">
       <div class="field">
-        <label for="lat">Latitude</label>
-        <input type="text" id="lat" name="lat" placeholder="e.g. 40.712776" required>
-      </div>
-      <div class="field">
-        <label for="lon">Longitude</label>
-        <input type="text" id="lon" name="lon" placeholder="e.g. -83.456789" required>
+        <label for="coords">Coordinates</label>
+        <input type="text" id="coords" name="coords" placeholder="e.g. 56.071708, -120.266439" required>
       </div>
       <button type="submit" id="submit-btn">Find Address</button>
     </form>
@@ -26,14 +22,21 @@
     <div id="status" class="status" role="status" aria-live="polite"></div>
 
     <section id="result" class="result hidden">
-      <h2>Rural Address</h2>
-      <p id="rural-address" class="rural-address"></p>
-      <dl id="details" class="details"></dl>
+      <h2>Alberta Township System</h2>
+      <p class="hint">Computed from the official survey grid. The legal location is exact; civic (911) numbers are estimated from the standard formula and may differ slightly from the number on the actual sign.</p>
+      <p id="legal-description" class="legal-description"></p>
+      <dl id="ats-candidates" class="details"></dl>
+
+      <h2>OpenStreetMap</h2>
+      <p id="osm-address" class="rural-address"></p>
+      <dl id="osm-details" class="details"></dl>
       <p class="full-name"><span>Full location:</span> <span id="full-name"></span></p>
     </section>
 
     <footer class="attribution">
-      Geocoding data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>, via <a href="https://nominatim.org/" target="_blank" rel="noopener">Nominatim</a>.
+      Survey grid data &copy; Government of Alberta (Open Government Licence). Geocoding data &copy;
+      <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>, via
+      <a href="https://nominatim.org/" target="_blank" rel="noopener">Nominatim</a>.
     </footer>
   </main>
 

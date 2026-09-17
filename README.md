@@ -19,13 +19,16 @@ to find which province it's in, then:
    Range Roads are numbered (odd on the east side) but disagree on Township
    Roads (Alberta: odd on the south side; Saskatchewan: odd on the north
    side) — the app accounts for the difference.
-2. **British Columbia, Manitoba, or Ontario** — these provinces don't use a
-   consistent province-wide DLS civic addressing scheme (BC's DLS coverage
-   is limited to the Peace River Block; Manitoba addressing varies by
-   municipality, some using a Township/Range scheme and others an unrelated
-   "gate address" format; Ontario uses a concession-and-lot survey system
-   with ordinary named-road addressing). For these, only the OpenStreetMap
-   result applies.
+2. **BC's Peace River Regional District** (the Fort St. John / Dawson Creek
+   area — the one part of BC on the DLS grid) — queries the district's own
+   public civic-addressing GIS layer directly, so this returns the real
+   assigned address rather than an estimate.
+3. **Everywhere else in BC, plus Manitoba and Ontario** — these don't have a
+   consistent addressing scheme this app can compute (the rest of BC isn't
+   on the DLS grid at all; Manitoba addressing varies by municipality, some
+   using a Township/Range scheme and others an unrelated "gate address"
+   format; Ontario uses a concession-and-lot survey system with ordinary
+   named-road addressing). For these, only the OpenStreetMap result applies.
 
 In all cases, **OpenStreetMap (Nominatim)** is also shown as a general
 reverse-geocode and cross-check, useful especially where OSM already has
@@ -59,7 +62,13 @@ This is a static site with no build step or backend. Any of these work:
   look up the county's authoritative address-point database directly. If you
   test this against a real, known sign and the number is off, that's useful
   feedback for refining the formula.
-- For BC, Manitoba, and Ontario, only the OpenStreetMap result is shown —
-  see above for why a computed grid address isn't offered there.
+- The **Peace River Regional District civic address** comes from the
+  district's own published address-point data, so when a nearby point
+  exists it should be the real, official address - not an estimate. This
+  integration is newer and less battle-tested than the Alberta/Saskatchewan
+  one, since the district doesn't document its data layer's exact field
+  names publicly.
+- For the rest of BC, Manitoba, and Ontario, only the OpenStreetMap result
+  is shown — see above for why a computed grid address isn't offered there.
 - All lookups go directly from your browser to the respective public APIs —
   no API key is required for any of them.

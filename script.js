@@ -25,6 +25,17 @@ const PROVINCE_CONFIG = {
   },
 };
 
+// BC has no province-wide DLS grid, but the Peace River Block (the one part
+// of BC that does use the DLS grid) is administered by the Peace River
+// Regional District, which publishes its own assigned 911 civic addresses
+// directly - so rather than estimate a number, we look up the real one.
+const PRRD_IDENTIFY_URL = "https://webmap.prrd.bc.ca/ags/rest/services/Geocortex/PRRD_Public/MapServer/identify";
+
+function isPeaceRiverRegion(address) {
+  const haystack = `${address.county || ""} ${address.state_district || ""}`.toLowerCase();
+  return haystack.includes("peace river");
+}
+
 const form = document.getElementById("lookup-form");
 const submitBtn = document.getElementById("submit-btn");
 const statusEl = document.getElementById("status");
@@ -216,6 +227,61 @@ function renderGridSection(province, ats) {
   }
 }
 
+// Looks up an authoritative, already-assigned civic address point (as
+// opposed to computing an estimate from survey geometry). Used for the
+// Peace River Regional District's own "911 Civic Address" layer, which
+// isn't split into predictable field names, so we take whatever the
+// identify operation's own display value for that feature is.
+async function lookupPointAddress(lat, lon, identifyUrl) {
+  const delta = 0.01;
+  const url = new URL(identifyUrl);
+  url.searchParams.set("geometry", `${lon},${lat}`);
+  url.searchParams.set("geometryType", "esriGeometryPoint");
+  url.searchParams.set("sr", "4326");
+  url.searchParams.set("layers", "all");
+  url.searchParams.set("tolerance", "15");
+  url.searchParams.set("mapExtent", `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`);
+  url.searchParams.set("imageDisplay", "600,600,96");
+  url.searchParams.set("returnGeometry", "false");
+  url.searchParams.set("f", "json");
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Civic address lookup failed (HTTP ${response.status}).`);
+  }
+  const data = await response.json();
+  const results = data.results || [];
+
+  const addressResult = results.find(
+    (r) => /civic address/i.test(r.layerName || "") && !/label/i.test(r.layerName || "")
+  );
+
+  if (!addressResult) return null;
+  return { value: addressResult.value, attributes: addressResult.attributes || {} };
+}
+
+function renderPointAddress(sourceLabel, result) {
+  gridHeadingEl.textContent = `Regional civic address (${sourceLabel})`;
+
+  if (!result) {
+    legalDescriptionEl.textContent = `No assigned civic address point was found near this location in ${sourceLabel}'s data - see the OpenStreetMap result below.`;
+    atsCandidatesEl.innerHTML = "";
+    return;
+  }
+
+  legalDescriptionEl.textContent = result.value || "Found a nearby address point, but couldn't read its address value.";
+
+  atsCandidatesEl.innerHTML = "";
+  for (const [key, value] of Object.entries(result.attributes)) {
+    if (value === null || value === "") continue;
+    const dt = document.createElement("dt");
+    dt.textContent = key;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    atsCandidatesEl.append(dt, dd);
+  }
+}
+
 function buildOsmAddress(address) {
   const road = address.road;
   if (!road) return null;
@@ -293,6 +359,16 @@ form.addEventListener("submit", async (event) => {
     } catch (err) {
       gridHeadingEl.textContent = `Dominion Land Survey grid (${province})`;
       legalDescriptionEl.textContent = "Survey grid lookup failed: " + err.message;
+      atsCandidatesEl.innerHTML = "";
+    }
+  } else if (province === "British Columbia" && osmData && osmData.address && isPeaceRiverRegion(osmData.address)) {
+    setStatus("Looking up regional civic address...", false);
+    try {
+      const pointResult = await lookupPointAddress(lat, lon, PRRD_IDENTIFY_URL);
+      renderPointAddress("Peace River Regional District", pointResult);
+    } catch (err) {
+      gridHeadingEl.textContent = "Regional civic address (Peace River Regional District)";
+      legalDescriptionEl.textContent = "Civic address lookup failed: " + err.message;
       atsCandidatesEl.innerHTML = "";
     }
   } else {
